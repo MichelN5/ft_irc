@@ -6,17 +6,23 @@
 /*   By: mnaouss <mnaouss@student.42beirut.com>     +#+  +:+       +#+        */
 /*                                                +#+#+#+#+#+   +#+           */
 /*   Created: 2026/09/01 20:44:33 by mnaouss           #+#    #+#             */
-/*   Updated: 2026/09/01 22:54:50 by mnaouss          ###   ########.fr       */
+/*   Updated: 2026/09/01 23:25:34 by mnaouss          ###   ########.fr       */
 /*                                                                            */
 /* ************************************************************************** */
 
 #include "Server.hpp"
 #include <unistd.h>
 
-Server::Server()
-    : serverFd(-1)
+Server::Server(
+    int serverPort,
+    const std::string &serverPassword
+)
+    : serverFd(-1),
+      port(serverPort),
+      password(serverPassword)
 {
 }
+
 
 Server::~Server()
 {
@@ -181,12 +187,9 @@ bool Server::readClient(std::size_t index)
             std::string message =
                 clientIt->second.extractMessage();
 
-            std::cout << "Complete IRC message from client "
-                    << clientFd
-                    << ": "
-                    << message
-                    << std::endl;
+            processMessage(clientFd, message);
         }
+
         buffer[bytesReceived] = '\0';
 
         std::cout << "Client "
@@ -245,7 +248,7 @@ bool Server::setupSocket()
     std::memset(&address, 0, sizeof(address));
     address.sin_family = AF_INET;
     address.sin_addr.s_addr = INADDR_ANY;
-    address.sin_port = htons(6667);
+    address.sin_port = htons(port);
 
     if (bind(serverFd,
              reinterpret_cast<struct sockaddr *>(&address),
@@ -271,7 +274,56 @@ bool Server::setupSocket()
 
     pollFds.push_back(serverPoll);
 
-    std::cout << "Server listening on port 6667" << std::endl;
+    std::cout << "Server listening on port " << port << std::endl;
 
     return true;
+}
+
+void Server::processMessage(
+    int clientFd,
+    const std::string &message
+)
+{
+    std::istringstream stream(message);
+    std::string command;
+
+    if (!(stream >> command))
+        return;
+
+    for (std::size_t i = 0; i < command.size(); i++)
+    {
+        command[i] = std::toupper(
+            static_cast<unsigned char>(command[i])
+        );
+    }
+
+    std::vector<std::string> parameters;
+    std::string parameter;
+
+    while (stream >> parameter)
+    {
+        if (parameter[0] == ':')
+        {
+            std::string trailing;
+
+            std::getline(stream, trailing);
+            parameters.push_back(
+                parameter.substr(1) + trailing
+            );
+            break;
+        }
+
+        parameters.push_back(parameter);
+    }
+
+    std::cout << "Client " << clientFd
+              << " command: " << command
+              << std::endl;
+
+    for (std::size_t i = 0; i < parameters.size(); i++)
+    {
+        std::cout << "parameter[" << i << "]: "
+                  << parameters[i]
+                  << std::endl;
+    }
 }
