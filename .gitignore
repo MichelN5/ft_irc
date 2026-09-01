@@ -1,0 +1,32 @@
+# Compiled C/C++ artifacts
+a.out
+*.o
+*.obj
+*.so
+*.dylib
+*.dll
+*.a
+*.lib
+*.exe
+
+# Build directories
+build/
+bin/
+obj/
+
+# Dependency files
+*.d
+
+# Debug and profiling files
+*.dSYM/
+*.gcda
+*.gcno
+*.gcov
+
+# Editor and OS files
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+.DS_Store
