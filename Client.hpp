@@ -1,20 +1,35 @@
 /* ************************************************************************** */
 /*                                                                            */
 /*                                                        :::      ::::::::   */
-/*   main.cpp                                           :+:      :+:    :+:   */
+/*   Client.hpp                                         :+:      :+:    :+:   */
 /*                                                    +:+ +:+         +:+     */
 /*   By: mnaouss <mnaouss@student.42beirut.com>     +#+  +:+       +#+        */
 /*                                                +#+#+#+#+#+   +#+           */
-/*   Created: 2026/08/24 20:54:20 by mnaouss           #+#    #+#             */
-/*   Updated: 2026/09/01 20:54:04 by mnaouss          ###   ########.fr       */
+/*   Created: 2026/09/01 22:15:36 by mnaouss           #+#    #+#             */
+/*   Updated: 2026/09/01 22:51:41 by mnaouss          ###   ########.fr       */
 /*                                                                            */
 /* ************************************************************************** */
 
-#include "Server.hpp"
+#ifndef CLIENT_HPP
+#define CLIENT_HPP
 
-int main()
+#include <string>
+#include <cstddef>
+
+class Client
 {
-    Server server;
+private:
+    int         fd;
+    std::string inputBuffer;
 
-    return server.run();
-}
+public:
+    explicit Client(int clientFd);
+
+    int getFd() const;
+    void appendData(const char *data, std::size_t length);
+    const std::string &getInputBuffer() const;
+    bool hasCompleteMessage() const;
+    std::string extractMessage();
+};
+
+#endif
