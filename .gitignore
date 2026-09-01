@@ -9,6 +9,7 @@ a.out
 *.lib
 *.exe
 
+
 # Build directories
 build/
 bin/
@@ -30,3 +31,5 @@ obj/
 .vscode/
 .idea/
 .DS_Store
+
+ircserv
