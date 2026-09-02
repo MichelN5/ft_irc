@@ -6,7 +6,7 @@
 /*   By: mnaouss <mnaouss@student.42beirut.com>     +#+  +:+       +#+        */
 /*                                                +#+#+#+#+#+   +#+           */
 /*   Created: 2026/09/01 20:44:33 by mnaouss           #+#    #+#             */
-/*   Updated: 2026/09/01 23:25:34 by mnaouss          ###   ########.fr       */
+/*   Updated: 2026/09/02 16:54:48 by mnaouss          ###   ########.fr       */
 /*                                                                            */
 /* ************************************************************************** */
 
@@ -326,4 +326,108 @@ void Server::processMessage(
                   << parameters[i]
                   << std::endl;
     }
+
+    std::map<int, Client>::iterator clientIt =
+    clients.find(clientFd);
+
+    if (clientIt == clients.end())
+        return;
+
+    if (command == "PASS")
+        handlePass(clientIt->second, parameters);
+    else if (command == "NICK")
+        handleNick(clientIt->second, parameters);
+}
+
+
+void Server::handlePass(
+    Client &client,
+    const std::vector<std::string> &parameters
+)
+{
+    if (parameters.empty())
+    {
+        std::cout << "PASS requires a password"
+                  << std::endl;
+        return;
+    }
+
+    if (client.isPasswordAccepted())
+    {
+        std::cout << "Client "
+                  << client.getFd()
+                  << " already provided the password"
+                  << std::endl;
+        return;
+    }
+
+    if (parameters[0] != password)
+    {
+        std::cout << "Incorrect password from client "
+                  << client.getFd()
+                  << std::endl;
+        return;
+    }
+
+    client.setPasswordAccepted(true);
+
+    std::cout << "Password accepted for client "
+              << client.getFd()
+              << std::endl;
+}
+
+bool Server::isNicknameInUse(
+    const std::string &nickname,
+    int currentFd
+) const
+{
+    std::map<int, Client>::const_iterator it;
+
+    for (it = clients.begin(); it != clients.end(); it++)
+    {
+        if (it->first != currentFd &&
+            it->second.getNickname() == nickname)
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+
+void Server::handleNick(
+    Client &client,
+    const std::vector<std::string> &parameters
+)
+{
+    if (!client.isPasswordAccepted())
+    {
+        std::cout << "Client must provide PASS first"
+                  << std::endl;
+        return;
+    }
+
+    if (parameters.empty() || parameters[0].empty())
+    {
+        std::cout << "NICK requires a nickname"
+                  << std::endl;
+        return;
+    }
+
+    if (isNicknameInUse(parameters[0], client.getFd()))
+    {
+        std::cout << "Nickname already in use: "
+                  << parameters[0]
+                  << std::endl;
+        return;
+    }
+
+    client.setNickname(parameters[0]);
+
+    std::cout << "Nickname set for client "
+              << client.getFd()
+              << ": "
+              << client.getNickname()
+              << std::endl;
 }

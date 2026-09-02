@@ -6,7 +6,7 @@
 /*   By: mnaouss <mnaouss@student.42beirut.com>     +#+  +:+       +#+        */
 /*                                                +#+#+#+#+#+   +#+           */
 /*   Created: 2026/09/01 22:15:36 by mnaouss           #+#    #+#             */
-/*   Updated: 2026/09/01 22:51:41 by mnaouss          ###   ########.fr       */
+/*   Updated: 2026/09/02 16:48:31 by mnaouss          ###   ########.fr       */
 /*                                                                            */
 /* ************************************************************************** */
 
@@ -15,12 +15,15 @@
 
 #include <string>
 #include <cstddef>
+#include <vector>
 
 class Client
 {
 private:
     int         fd;
     std::string inputBuffer;
+    bool passwordAccepted;
+    std::string nickname;
 
 public:
     explicit Client(int clientFd);
@@ -30,6 +33,13 @@ public:
     const std::string &getInputBuffer() const;
     bool hasCompleteMessage() const;
     std::string extractMessage();
+
+    bool isPasswordAccepted() const;
+    void setPasswordAccepted(bool accepted);
+
+    const std::string &getNickname() const;
+    void setNickname(const std::string &newNickname);
+    
 };
 
 #endif

@@ -6,14 +6,17 @@
 /*   By: mnaouss <mnaouss@student.42beirut.com>     +#+  +:+       +#+        */
 /*                                                +#+#+#+#+#+   +#+           */
 /*   Created: 2026/09/01 22:24:16 by mnaouss           #+#    #+#             */
-/*   Updated: 2026/09/01 22:52:41 by mnaouss          ###   ########.fr       */
+/*   Updated: 2026/09/02 16:50:19 by mnaouss          ###   ########.fr       */
 /*                                                                            */
 /* ************************************************************************** */
 
 #include "Client.hpp"
 
 Client::Client(int clientFd)
-    : fd(clientFd), inputBuffer()
+    : fd(clientFd),
+      inputBuffer(),
+      passwordAccepted(false),
+      nickname()
 {
 }
 
@@ -49,4 +52,25 @@ std::string Client::extractMessage()
     inputBuffer.erase(0, end + 2);
 
     return message;
+}
+
+bool Client::isPasswordAccepted() const
+{
+    return passwordAccepted;
+}
+
+void Client::setPasswordAccepted(bool accepted)
+{
+    passwordAccepted = accepted;
+}
+
+
+const std::string &Client::getNickname() const
+{
+    return nickname;
+}
+
+void Client::setNickname(const std::string &newNickname)
+{
+    nickname = newNickname;
 }

@@ -6,7 +6,7 @@
 /*   By: mnaouss <mnaouss@student.42beirut.com>     +#+  +:+       +#+        */
 /*                                                +#+#+#+#+#+   +#+           */
 /*   Created: 2026/09/01 20:43:18 by mnaouss           #+#    #+#             */
-/*   Updated: 2026/09/01 23:24:24 by mnaouss          ###   ########.fr       */
+/*   Updated: 2026/09/02 16:52:12 by mnaouss          ###   ########.fr       */
 /*                                                                            */
 /* ************************************************************************** */
 
@@ -49,6 +49,21 @@ public:
     ~Server();
 
     int run();
+    
+    void handlePass(
+        Client &client,
+        const std::vector<std::string> &parameters
+        );
+    void handleNick(
+        Client &client,
+        const std::vector<std::string> &parameters
+    );
+
+    bool isNicknameInUse(
+        const std::string &nickname,
+        int currentFd
+    ) const;
+    
 };
 
 #endif
