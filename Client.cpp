@@ -6,7 +6,7 @@
 /*   By: mnaouss <mnaouss@student.42beirut.com>     +#+  +:+       +#+        */
 /*                                                +#+#+#+#+#+   +#+           */
 /*   Created: 2026/09/01 22:24:16 by mnaouss           #+#    #+#             */
-/*   Updated: 2026/09/02 16:50:19 by mnaouss          ###   ########.fr       */
+/*   Updated: 2026/09/02 17:54:51 by mnaouss          ###   ########.fr       */
 /*                                                                            */
 /* ************************************************************************** */
 
@@ -15,8 +15,12 @@
 Client::Client(int clientFd)
     : fd(clientFd),
       inputBuffer(),
+      outputBuffer(),
       passwordAccepted(false),
-      nickname()
+      nickname(),
+      username(),
+      realname(),
+      registered(false)
 {
 }
 
@@ -73,4 +77,54 @@ const std::string &Client::getNickname() const
 void Client::setNickname(const std::string &newNickname)
 {
     nickname = newNickname;
+}
+
+const std::string &Client::getUsername() const
+{
+    return username;
+}
+
+const std::string &Client::getRealname() const
+{
+    return realname;
+}
+
+void Client::setUserInfo(
+    const std::string &newUsername,
+    const std::string &newRealname
+)
+{
+    username = newUsername;
+    realname = newRealname;
+}
+
+bool Client::isRegistered() const
+{
+    return registered;
+}
+
+void Client::setRegistered(bool value)
+{
+    registered = value;
+}
+
+
+void Client::queueMessage(const std::string &message)
+{
+    outputBuffer += message;
+}
+
+bool Client::hasPendingOutput() const
+{
+    return !outputBuffer.empty();
+}
+
+const std::string &Client::getOutputBuffer() const
+{
+    return outputBuffer;
+}
+
+void Client::removeSentData(std::size_t length)
+{
+    outputBuffer.erase(0, length);
 }

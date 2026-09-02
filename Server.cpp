@@ -6,7 +6,7 @@
 /*   By: mnaouss <mnaouss@student.42beirut.com>     +#+  +:+       +#+        */
 /*                                                +#+#+#+#+#+   +#+           */
 /*   Created: 2026/09/01 20:44:33 by mnaouss           #+#    #+#             */
-/*   Updated: 2026/09/02 16:54:48 by mnaouss          ###   ########.fr       */
+/*   Updated: 2026/09/02 18:15:20 by mnaouss          ###   ########.fr       */
 /*                                                                            */
 /* ************************************************************************** */
 
@@ -52,26 +52,36 @@ int Server::run()
             return 1;
         }
 
-        for (std::size_t i = 0; i < pollFds.size(); i++)
+        for (std::size_t i = 0; i < pollFds.size();)
         {
-            if (pollFds[i].revents & POLLIN)
+            short readyEvents = pollFds[i].revents;
+            bool removed = false;
+
+            if (readyEvents & POLLIN)
             {
                 if (pollFds[i].fd == serverFd)
                 {
-
                     acceptClient();
                 }
-
-                else if(!readClient(i))
+                else if (!readClient(i))
                 {
-                    i--;
-                    
-                }
-
+                    removed = true;
                 }
             }
+
+            if (!removed &&
+                pollFds[i].fd != serverFd &&
+                (readyEvents & POLLOUT))
+            {
+                if (!writeClient(i))
+                    removed = true;
+            }
+
+            if (!removed)
+                i++;
         }
-    
+    }
+
 
     return 0;
 }
@@ -337,6 +347,8 @@ void Server::processMessage(
         handlePass(clientIt->second, parameters);
     else if (command == "NICK")
         handleNick(clientIt->second, parameters);
+    else if (command == "USER")
+        handleUser(clientIt->second, parameters);
 }
 
 
@@ -374,6 +386,7 @@ void Server::handlePass(
     std::cout << "Password accepted for client "
               << client.getFd()
               << std::endl;
+    tryRegister(client);
 }
 
 bool Server::isNicknameInUse(
@@ -430,4 +443,136 @@ void Server::handleNick(
               << ": "
               << client.getNickname()
               << std::endl;
+    tryRegister(client);
+}
+
+void Server::handleUser(
+    Client &client,
+    const std::vector<std::string> &parameters
+)
+{
+    if (!client.isPasswordAccepted())
+    {
+        std::cout << "Client must provide PASS first"
+                  << std::endl;
+        return;
+    }
+
+    if (client.isRegistered())
+    {
+        std::cout << "Client is already registered"
+                  << std::endl;
+        return;
+    }
+
+    if (parameters.size() < 4)
+    {
+        std::cout << "USER requires four parameters"
+                  << std::endl;
+        return;
+    }
+
+    client.setUserInfo(parameters[0], parameters[3]);
+
+    tryRegister(client);
+}
+
+void Server::tryRegister(Client &client)
+{
+    if (client.isRegistered())
+        return;
+
+    if (!client.isPasswordAccepted())
+        return;
+
+    if (client.getNickname().empty())
+        return;
+
+    if (client.getUsername().empty())
+        return;
+
+    client.setRegistered(true);
+
+    std::string welcome =
+        ":ircserv 001 " + client.getNickname() +
+        " :Welcome to the Internet Relay Network " +
+        client.getNickname();
+
+    queueReply(client, welcome);
+}
+
+void Server::queueReply(
+    Client &client,
+    const std::string &message
+)
+{
+    client.queueMessage(message + "\r\n");
+
+    for (std::size_t i = 0; i < pollFds.size(); i++)
+    {
+        if (pollFds[i].fd == client.getFd())
+        {
+            pollFds[i].events |= POLLOUT;
+            return;
+        }
+    }
+}
+
+
+bool Server::writeClient(std::size_t index)
+{
+    int clientFd = pollFds[index].fd;
+
+    std::map<int, Client>::iterator clientIt =
+        clients.find(clientFd);
+
+    if (clientIt == clients.end())
+    {
+        disconnectClient(index);
+        return false;
+    }
+
+    Client &client = clientIt->second;
+
+    if (!client.hasPendingOutput())
+    {
+        pollFds[index].events &= ~POLLOUT;
+        return true;
+    }
+
+    const std::string &output =
+        client.getOutputBuffer();
+
+    ssize_t bytesSent = send(
+        clientFd,
+        output.c_str(),
+        output.size(),
+        MSG_NOSIGNAL
+    );
+
+    if (bytesSent > 0)
+    {
+        client.removeSentData(
+            static_cast<std::size_t>(bytesSent)
+        );
+
+        if (!client.hasPendingOutput())
+            pollFds[index].events &= ~POLLOUT;
+
+        return true;
+    }
+
+    if (bytesSent == -1 &&
+        (errno == EAGAIN || errno == EWOULDBLOCK))
+    {
+        return true;
+    }
+
+    std::cerr << "send failed for client "
+              << clientFd << ": "
+              << strerror(errno)
+              << std::endl;
+
+    disconnectClient(index);
+    return false;
 }

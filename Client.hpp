@@ -6,7 +6,7 @@
 /*   By: mnaouss <mnaouss@student.42beirut.com>     +#+  +:+       +#+        */
 /*                                                +#+#+#+#+#+   +#+           */
 /*   Created: 2026/09/01 22:15:36 by mnaouss           #+#    #+#             */
-/*   Updated: 2026/09/02 16:48:31 by mnaouss          ###   ########.fr       */
+/*   Updated: 2026/09/02 17:57:05 by mnaouss          ###   ########.fr       */
 /*                                                                            */
 /* ************************************************************************** */
 
@@ -22,8 +22,13 @@ class Client
 private:
     int         fd;
     std::string inputBuffer;
+    std::string outputBuffer;
     bool passwordAccepted;
     std::string nickname;
+    std::string username;
+    std::string realname;
+    bool        registered;
+
 
 public:
     explicit Client(int clientFd);
@@ -39,7 +44,23 @@ public:
 
     const std::string &getNickname() const;
     void setNickname(const std::string &newNickname);
-    
+
+    const std::string &getUsername() const;
+    const std::string &getRealname() const;
+
+    void setUserInfo(
+        const std::string &newUsername,
+        const std::string &newRealname
+    );
+
+    bool isRegistered() const;
+    void setRegistered(bool value);
+
+    void queueMessage(const std::string &message);
+    bool hasPendingOutput() const;
+    const std::string &getOutputBuffer() const;
+    void removeSentData(std::size_t length);
+
 };
 
 #endif

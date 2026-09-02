@@ -6,7 +6,7 @@
 /*   By: mnaouss <mnaouss@student.42beirut.com>     +#+  +:+       +#+        */
 /*                                                +#+#+#+#+#+   +#+           */
 /*   Created: 2026/09/01 20:43:18 by mnaouss           #+#    #+#             */
-/*   Updated: 2026/09/02 16:52:12 by mnaouss          ###   ########.fr       */
+/*   Updated: 2026/09/02 18:00:59 by mnaouss          ###   ########.fr       */
 /*                                                                            */
 /* ************************************************************************** */
 
@@ -63,7 +63,21 @@ public:
         const std::string &nickname,
         int currentFd
     ) const;
-    
+
+    void handleUser(
+        Client &client,
+        const std::vector<std::string> &parameters
+    );
+
+    void tryRegister(Client &client);
+
+    void queueReply(
+        Client &client,
+        const std::string &message
+    );
+
+    bool writeClient(std::size_t index);
+
 };
 
 #endif
