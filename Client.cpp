@@ -20,7 +20,9 @@ Client::Client(int clientFd)
       nickname(),
       username(),
       realname(),
-      registered(false)
+      registered(false),
+      quitRequested(false),
+      quitReason()
 {
 }
 
@@ -106,6 +108,22 @@ bool Client::isRegistered() const
 void Client::setRegistered(bool value)
 {
     registered = value;
+}
+
+void Client::requestQuit(const std::string &reason)
+{
+    quitRequested = true;
+    quitReason = reason;
+}
+
+bool Client::isQuitRequested() const
+{
+    return quitRequested;
+}
+
+const std::string &Client::getQuitReason() const
+{
+    return quitReason;
 }
 
 

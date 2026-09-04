@@ -33,3 +33,6 @@ obj/
 .DS_Store
 
 ircserv
+
+# Project subject (local reference only)
+en.subject.pdf

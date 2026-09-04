@@ -6,12 +6,53 @@
 /*   By: mnaouss <mnaouss@student.42beirut.com>     +#+  +:+       +#+        */
 /*                                                +#+#+#+#+#+   +#+           */
 /*   Created: 2026/09/01 20:44:33 by mnaouss           #+#    #+#             */
-/*   Updated: 2026/09/02 18:15:20 by mnaouss          ###   ########.fr       */
+/*   Updated: 2026/09/04 13:36:59 by mnaouss          ###   ########.fr       */
 /*                                                                            */
 /* ************************************************************************** */
 
 #include "Server.hpp"
 #include <unistd.h>
+
+static std::vector<std::string> splitCommaSeparated(
+    const std::string &value
+)
+{
+    std::vector<std::string> result;
+    std::size_t start = 0;
+
+    while (start <= value.size())
+    {
+        std::size_t comma = value.find(',', start);
+
+        if (comma == std::string::npos)
+        {
+            result.push_back(value.substr(start));
+            break;
+        }
+
+        result.push_back(value.substr(start, comma - start));
+        start = comma + 1;
+    }
+
+    return result;
+}
+
+static bool isValidChannelName(const std::string &name)
+{
+    if (name.size() < 2 || (name[0] != '#' && name[0] != '&'))
+        return false;
+
+    for (std::size_t i = 1; i < name.size(); i++)
+    {
+        unsigned char character =
+            static_cast<unsigned char>(name[i]);
+
+        if (character <= 32 || character == 7 || name[i] == ',')
+            return false;
+    }
+
+    return true;
+}
 
 Server::Server(
     int serverPort,
@@ -75,6 +116,14 @@ int Server::run()
             {
                 if (!writeClient(i))
                     removed = true;
+            }
+
+            if (!removed &&
+                pollFds[i].fd != serverFd &&
+                (readyEvents & (POLLERR | POLLHUP | POLLNVAL)))
+            {
+                disconnectClient(i, "Connection closed");
+                removed = true;
             }
 
             if (!removed)
@@ -144,7 +193,10 @@ void Server::acceptClient()
               << clientFd << std::endl;
 }
 
-void Server::disconnectClient(std::size_t index)
+void Server::disconnectClient(
+    std::size_t index,
+    const std::string &reason
+)
 {
     int clientFd = pollFds[index].fd;
     std::cout << "Client "
@@ -152,9 +204,72 @@ void Server::disconnectClient(std::size_t index)
               << " disconnected"
               << std::endl;
 
+    std::map<int, Client>::iterator clientIt = clients.find(clientFd);
+
+    if (clientIt != clients.end())
+    {
+        removeClientFromChannels(clientIt->second, reason);
+        clients.erase(clientIt);
+    }
+
     close(clientFd);
-    clients.erase(clientFd);
     pollFds.erase(pollFds.begin() + index);
+}
+
+void Server::removeClientFromChannels(
+    Client &client,
+    const std::string &reason
+)
+{
+    std::set<int> recipients;
+    std::map<std::string, Channel>::iterator channelIt = channels.begin();
+
+    while (channelIt != channels.end())
+    {
+        Channel &channel = channelIt->second;
+        channel.removeInvitation(client.getFd());
+
+        if (channel.hasMember(client.getFd()))
+        {
+            const std::set<int> &members = channel.getMembers();
+
+            for (std::set<int>::const_iterator memberIt = members.begin();
+                 memberIt != members.end(); ++memberIt)
+            {
+                if (*memberIt != client.getFd())
+                    recipients.insert(*memberIt);
+            }
+
+            channel.removeMember(client.getFd());
+        }
+
+        if (channel.isEmpty())
+        {
+            std::map<std::string, Channel>::iterator emptyChannel = channelIt;
+            ++channelIt;
+            channels.erase(emptyChannel);
+            continue;
+        }
+
+        if (!channel.hasOperators())
+            channel.addOperator(*channel.getMembers().begin());
+
+        ++channelIt;
+    }
+
+    if (client.getNickname().empty())
+        return;
+
+    std::string message = getClientPrefix(client) + " QUIT :" + reason;
+
+    for (std::set<int>::const_iterator it = recipients.begin();
+         it != recipients.end(); ++it)
+    {
+        std::map<int, Client>::iterator recipient = clients.find(*it);
+
+        if (recipient != clients.end())
+            queueReply(recipient->second, message);
+    }
 }
 
 
@@ -171,7 +286,7 @@ bool Server::readClient(std::size_t index)
         std::cerr << "Client state not found for fd "
                 << clientFd << std::endl;
 
-        disconnectClient(index);
+        disconnectClient(index, "Internal server error");
         return false;
     }
 
@@ -198,6 +313,12 @@ bool Server::readClient(std::size_t index)
                 clientIt->second.extractMessage();
 
             processMessage(clientFd, message);
+
+            if (clientIt->second.isQuitRequested())
+            {
+                disconnectClient(index, clientIt->second.getQuitReason());
+                return false;
+            }
         }
 
         buffer[bytesReceived] = '\0';
@@ -212,7 +333,7 @@ bool Server::readClient(std::size_t index)
 
     if (bytesReceived == 0)
     {
-        disconnectClient(index);
+        disconnectClient(index, "Connection closed");
         return false;
     }
 
@@ -222,7 +343,7 @@ bool Server::readClient(std::size_t index)
                   << strerror(errno)
                   << std::endl;
 
-        disconnectClient(index);
+        disconnectClient(index, "Connection error");
         return false;
     }
 
@@ -344,11 +465,376 @@ void Server::processMessage(
         return;
 
     if (command == "PASS")
+    {
         handlePass(clientIt->second, parameters);
+    }
     else if (command == "NICK")
+    {
         handleNick(clientIt->second, parameters);
+    }
     else if (command == "USER")
+    {
         handleUser(clientIt->second, parameters);
+    }
+    else if (command == "JOIN")
+    {
+        handleJoin(clientIt->second, parameters);
+    }
+    else if (command == "PART")
+    {
+        handlePart(clientIt->second, parameters);
+    }
+    else if (command == "QUIT")
+    {
+        handleQuit(clientIt->second, parameters);
+    }
+    else if (command == "PING")
+    {
+        handlePing(clientIt->second, parameters);
+    }
+    else if (command == "PONG")
+    {
+        return;
+    }
+    else if (command == "CAP")
+    {
+        handleCap(clientIt->second, parameters);
+    }
+    else
+    {
+        sendNumeric(
+            clientIt->second,
+            "421",
+            command + " :Unknown command"
+        );
+    }
+}
+
+void Server::handleJoin(
+    Client &client,
+    const std::vector<std::string> &parameters
+)
+{
+    if (!client.isRegistered())
+    {
+        sendNumeric(client, "451", ":You have not registered");
+        return;
+    }
+
+    if (parameters.empty() || parameters[0].empty())
+    {
+        sendNumeric(client, "461", "JOIN :Not enough parameters");
+        return;
+    }
+
+    std::vector<std::string> channelNames =
+        splitCommaSeparated(parameters[0]);
+    std::vector<std::string> keys;
+
+    if (parameters.size() > 1)
+        keys = splitCommaSeparated(parameters[1]);
+
+    for (std::size_t i = 0; i < channelNames.size(); i++)
+    {
+        const std::string &requestedName = channelNames[i];
+
+        if (!isValidChannelName(requestedName))
+        {
+            sendNumeric(
+                client,
+                "403",
+                requestedName + " :No such channel"
+            );
+            continue;
+        }
+
+        std::string normalizedName = normalizeName(requestedName);
+        std::map<std::string, Channel>::iterator channelIt =
+            channels.find(normalizedName);
+
+        if (channelIt == channels.end())
+        {
+            channels.insert(std::make_pair(
+                normalizedName,
+                Channel(requestedName)
+            ));
+            channelIt = channels.find(normalizedName);
+        }
+
+        Channel &channel = channelIt->second;
+
+        if (channel.hasMember(client.getFd()))
+            continue;
+
+        if (channel.isInviteOnly() &&
+            !channel.isInvited(client.getFd()))
+        {
+            sendNumeric(
+                client,
+                "473",
+                channel.getName() + " :Cannot join channel (+i)"
+            );
+            continue;
+        }
+
+        std::string suppliedKey;
+        if (i < keys.size())
+            suppliedKey = keys[i];
+
+        if (channel.hasKey() && channel.getKey() != suppliedKey)
+        {
+            sendNumeric(
+                client,
+                "475",
+                channel.getName() + " :Cannot join channel (+k)"
+            );
+            continue;
+        }
+
+        if (channel.hasUserLimit() &&
+            channel.getMemberCount() >= channel.getUserLimit())
+        {
+            sendNumeric(
+                client,
+                "471",
+                channel.getName() + " :Cannot join channel (+l)"
+            );
+            continue;
+        }
+
+        bool firstMember = channel.isEmpty();
+        channel.addMember(client.getFd());
+        channel.removeInvitation(client.getFd());
+
+        if (firstMember)
+            channel.addOperator(client.getFd());
+
+        broadcastToChannel(
+            channel,
+            getClientPrefix(client) + " JOIN :" + channel.getName()
+        );
+
+        if (channel.getTopic().empty())
+        {
+            sendNumeric(
+                client,
+                "331",
+                channel.getName() + " :No topic is set"
+            );
+        }
+        else
+        {
+            sendNumeric(
+                client,
+                "332",
+                channel.getName() + " :" + channel.getTopic()
+            );
+        }
+
+        sendNames(client, channel);
+    }
+}
+
+void Server::handlePart(
+    Client &client,
+    const std::vector<std::string> &parameters
+)
+{
+    if (!client.isRegistered())
+    {
+        sendNumeric(client, "451", ":You have not registered");
+        return;
+    }
+
+    if (parameters.empty() || parameters[0].empty())
+    {
+        sendNumeric(client, "461", "PART :Not enough parameters");
+        return;
+    }
+
+    std::vector<std::string> channelNames =
+        splitCommaSeparated(parameters[0]);
+    std::string reason = client.getNickname();
+
+    if (parameters.size() > 1 && !parameters[1].empty())
+        reason = parameters[1];
+
+    for (std::size_t i = 0; i < channelNames.size(); i++)
+    {
+        std::string normalizedName = normalizeName(channelNames[i]);
+        std::map<std::string, Channel>::iterator channelIt =
+            channels.find(normalizedName);
+
+        if (channelIt == channels.end())
+        {
+            sendNumeric(
+                client,
+                "403",
+                channelNames[i] + " :No such channel"
+            );
+            continue;
+        }
+
+        Channel &channel = channelIt->second;
+
+        if (!channel.hasMember(client.getFd()))
+        {
+            sendNumeric(
+                client,
+                "442",
+                channel.getName() + " :You're not on that channel"
+            );
+            continue;
+        }
+
+        broadcastToChannel(
+            channel,
+            getClientPrefix(client) + " PART " +
+                channel.getName() + " :" + reason
+        );
+
+        channel.removeMember(client.getFd());
+
+        if (channel.isEmpty())
+        {
+            channels.erase(channelIt);
+        }
+        else if (!channel.hasOperators())
+        {
+            channel.addOperator(*channel.getMembers().begin());
+        }
+    }
+}
+
+void Server::handleQuit(
+    Client &client,
+    const std::vector<std::string> &parameters
+)
+{
+    std::string reason = "Client Quit";
+
+    if (!parameters.empty() && !parameters[0].empty())
+        reason = parameters[0];
+
+    client.requestQuit(reason);
+}
+
+void Server::handlePing(
+    Client &client,
+    const std::vector<std::string> &parameters
+)
+{
+    if (parameters.empty() || parameters[0].empty())
+    {
+        sendNumeric(client, "409", ":No origin specified");
+        return;
+    }
+
+    queueReply(
+        client,
+        ":ircserv PONG ircserv :" + parameters[0]
+    );
+}
+
+void Server::handleCap(
+    Client &client,
+    const std::vector<std::string> &parameters
+)
+{
+    if (parameters.empty())
+    {
+        sendNumeric(client, "461", "CAP :Not enough parameters");
+        return;
+    }
+
+    std::string subcommand = parameters[0];
+
+    for (std::size_t i = 0; i < subcommand.size(); i++)
+    {
+        subcommand[i] = static_cast<char>(std::toupper(
+            static_cast<unsigned char>(subcommand[i])
+        ));
+    }
+
+    std::string target = client.getNickname();
+    if (target.empty())
+        target = "*";
+
+    if (subcommand == "LS")
+    {
+        queueReply(client, ":ircserv CAP " + target + " LS :");
+    }
+    else if (subcommand == "REQ")
+    {
+        std::string requestedCapabilities;
+        if (parameters.size() > 1)
+            requestedCapabilities = parameters[1];
+
+        queueReply(
+            client,
+            ":ircserv CAP " + target + " NAK :" +
+                requestedCapabilities
+        );
+    }
+    else if (subcommand == "END")
+    {
+        return;
+    }
+}
+
+std::string Server::getClientPrefix(const Client &client) const
+{
+    return ":" + client.getNickname() +
+        "!" + client.getUsername() + "@localhost";
+}
+
+void Server::broadcastToChannel(
+    Channel &channel,
+    const std::string &message
+)
+{
+    const std::set<int> &members = channel.getMembers();
+
+    for (std::set<int>::const_iterator it = members.begin();
+         it != members.end(); ++it)
+    {
+        std::map<int, Client>::iterator clientIt = clients.find(*it);
+
+        if (clientIt != clients.end())
+            queueReply(clientIt->second, message);
+    }
+}
+
+void Server::sendNames(Client &client, const Channel &channel)
+{
+    std::string names;
+    const std::set<int> &members = channel.getMembers();
+
+    for (std::set<int>::const_iterator it = members.begin();
+         it != members.end(); ++it)
+    {
+        std::map<int, Client>::const_iterator clientIt = clients.find(*it);
+
+        if (clientIt == clients.end())
+            continue;
+
+        if (!names.empty())
+            names += " ";
+        if (channel.isOperator(*it))
+            names += "@";
+        names += clientIt->second.getNickname();
+    }
+
+    sendNumeric(
+        client,
+        "353",
+        "= " + channel.getName() + " :" + names
+    );
+    sendNumeric(
+        client,
+        "366",
+        channel.getName() + " :End of /NAMES list"
+    );
 }
 
 
@@ -359,25 +845,32 @@ void Server::handlePass(
 {
     if (parameters.empty())
     {
-        std::cout << "PASS requires a password"
-                  << std::endl;
+        sendNumeric(
+            client,
+            "461",
+            "PASS :Not enough parameters"
+        );
         return;
     }
 
-    if (client.isPasswordAccepted())
+    if (client.isRegistered() ||
+        client.isPasswordAccepted())
     {
-        std::cout << "Client "
-                  << client.getFd()
-                  << " already provided the password"
-                  << std::endl;
+        sendNumeric(
+            client,
+            "462",
+            ":You may not reregister"
+        );
         return;
     }
 
     if (parameters[0] != password)
     {
-        std::cout << "Incorrect password from client "
-                  << client.getFd()
-                  << std::endl;
+        sendNumeric(
+            client,
+            "464",
+            ":Password incorrect"
+        );
         return;
     }
 
@@ -394,12 +887,21 @@ bool Server::isNicknameInUse(
     int currentFd
 ) const
 {
+    std::string normalizedNickname =
+        normalizeName(nickname);
+
     std::map<int, Client>::const_iterator it;
 
-    for (it = clients.begin(); it != clients.end(); it++)
+    for (it = clients.begin();
+         it != clients.end();
+         it++)
     {
-        if (it->first != currentFd &&
-            it->second.getNickname() == nickname)
+        if (it->first == currentFd)
+            continue;
+
+        if (normalizeName(
+                it->second.getNickname()
+            ) == normalizedNickname)
         {
             return true;
         }
@@ -416,33 +918,75 @@ void Server::handleNick(
 {
     if (!client.isPasswordAccepted())
     {
-        std::cout << "Client must provide PASS first"
-                  << std::endl;
+        sendNumeric(
+            client,
+            "451",
+            ":You have not registered"
+        );
         return;
     }
 
-    if (parameters.empty() || parameters[0].empty())
+    if (parameters.empty() ||
+        parameters[0].empty())
     {
-        std::cout << "NICK requires a nickname"
-                  << std::endl;
+        sendNumeric(
+            client,
+            "431",
+            ":No nickname given"
+        );
         return;
     }
 
-    if (isNicknameInUse(parameters[0], client.getFd()))
+    const std::string &newNickname =
+        parameters[0];
+
+    if (!isValidNickname(newNickname))
     {
-        std::cout << "Nickname already in use: "
-                  << parameters[0]
-                  << std::endl;
+        sendNumeric(
+            client,
+            "432",
+            newNickname +
+            " :Erroneous nickname"
+        );
         return;
     }
 
-    client.setNickname(parameters[0]);
+    if (isNicknameInUse(
+            newNickname,
+            client.getFd()
+        ))
+    {
+        sendNumeric(
+            client,
+            "433",
+            newNickname +
+            " :Nickname is already in use"
+        );
+        return;
+    }
+
+    std::string oldNickname =
+        client.getNickname();
+
+    client.setNickname(newNickname);
+
+    if (client.isRegistered() &&
+        !oldNickname.empty() &&
+        oldNickname != newNickname)
+    {
+        queueReply(
+            client,
+            ":" + oldNickname +
+            " NICK :" + newNickname
+        );
+    }
 
     std::cout << "Nickname set for client "
               << client.getFd()
               << ": "
               << client.getNickname()
               << std::endl;
+
     tryRegister(client);
 }
 
@@ -453,22 +997,31 @@ void Server::handleUser(
 {
     if (!client.isPasswordAccepted())
     {
-        std::cout << "Client must provide PASS first"
-                  << std::endl;
+        sendNumeric(
+            client,
+            "451",
+            ":You have not registered"
+        );
         return;
     }
 
     if (client.isRegistered())
     {
-        std::cout << "Client is already registered"
-                  << std::endl;
+        sendNumeric(
+            client,
+            "462",
+            ":You may not reregister"
+        );
         return;
     }
 
     if (parameters.size() < 4)
     {
-        std::cout << "USER requires four parameters"
-                  << std::endl;
+        sendNumeric(
+            client,
+            "461",
+            "USER :Not enough parameters"
+        );
         return;
     }
 
@@ -493,12 +1046,32 @@ void Server::tryRegister(Client &client)
 
     client.setRegistered(true);
 
-    std::string welcome =
-        ":ircserv 001 " + client.getNickname() +
-        " :Welcome to the Internet Relay Network " +
-        client.getNickname();
+    sendNumeric(
+        client,
+        "001",
+        ":Welcome to the Internet Relay Network " +
+        client.getNickname()
+    );
+}
 
-    queueReply(client, welcome);
+void Server::sendNumeric(
+    Client &client,
+    const std::string &code,
+    const std::string &parameters
+)
+{
+    std::string target = client.getNickname();
+
+    if (target.empty())
+        target = "*";
+
+    std::string message =
+        ":ircserv " + code + " " + target;
+
+    if (!parameters.empty())
+        message += " " + parameters;
+
+    queueReply(client, message);
 }
 
 void Server::queueReply(
@@ -528,7 +1101,7 @@ bool Server::writeClient(std::size_t index)
 
     if (clientIt == clients.end())
     {
-        disconnectClient(index);
+        disconnectClient(index, "Internal server error");
         return false;
     }
 
@@ -573,6 +1146,76 @@ bool Server::writeClient(std::size_t index)
               << strerror(errno)
               << std::endl;
 
-    disconnectClient(index);
+    disconnectClient(index, "Connection error");
     return false;
+}
+
+
+std::string Server::normalizeName(
+    const std::string &name
+) const
+{
+    std::string normalized = name;
+
+    for (std::size_t i = 0; i < normalized.size(); i++)
+    {
+        unsigned char character =
+            static_cast<unsigned char>(normalized[i]);
+
+        normalized[i] = static_cast<char>(
+            std::tolower(character)
+        );
+    }
+
+    return normalized;
+}
+
+bool Server::isValidNickname(
+    const std::string &nickname
+) const
+{
+    if (nickname.empty())
+        return false;
+
+    unsigned char first =
+        static_cast<unsigned char>(nickname[0]);
+
+    if (!std::isalpha(first) &&
+        nickname[0] != '_' &&
+        nickname[0] != '[' &&
+        nickname[0] != ']' &&
+        nickname[0] != '\\' &&
+        nickname[0] != '`' &&
+        nickname[0] != '^' &&
+        nickname[0] != '{' &&
+        nickname[0] != '|' &&
+        nickname[0] != '}')
+    {
+        return false;
+    }
+
+    for (std::size_t i = 1;
+         i < nickname.size();
+         i++)
+    {
+        unsigned char character =
+            static_cast<unsigned char>(nickname[i]);
+
+        if (!std::isalnum(character) &&
+            nickname[i] != '-' &&
+            nickname[i] != '_' &&
+            nickname[i] != '[' &&
+            nickname[i] != ']' &&
+            nickname[i] != '\\' &&
+            nickname[i] != '`' &&
+            nickname[i] != '^' &&
+            nickname[i] != '{' &&
+            nickname[i] != '|' &&
+            nickname[i] != '}')
+        {
+            return false;
+        }
+    }
+
+    return true;
 }

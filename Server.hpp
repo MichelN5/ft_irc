@@ -6,7 +6,7 @@
 /*   By: mnaouss <mnaouss@student.42beirut.com>     +#+  +:+       +#+        */
 /*                                                +#+#+#+#+#+   +#+           */
 /*   Created: 2026/09/01 20:43:18 by mnaouss           #+#    #+#             */
-/*   Updated: 2026/09/02 18:00:59 by mnaouss          ###   ########.fr       */
+/*   Updated: 2026/09/04 13:31:48 by mnaouss          ###   ########.fr       */
 /*                                                                            */
 /* ************************************************************************** */
 
@@ -23,6 +23,7 @@
 #include <poll.h>
 #include <vector>
 #include "Client.hpp"
+#include "Channel.hpp"
 #include <map>
 #include <utility>
 #include <cctype>
@@ -33,6 +34,7 @@ class Server
 private:
     int serverFd;
     std::map<int, Client> clients;
+    std::map<std::string, Channel> channels;
     int         port;
     std::string password;
     
@@ -40,9 +42,22 @@ private:
     bool setNonBlocking(int fd);
     void acceptClient();
     bool readClient(std::size_t index);
-    void disconnectClient(std::size_t index);
+    void disconnectClient(
+        std::size_t index,
+        const std::string &reason
+    );
+    void removeClientFromChannels(
+        Client &client,
+        const std::string &reason
+    );
     bool setupSocket();
     void processMessage(int clientFd, const std::string &message);
+    void broadcastToChannel(
+        Channel &channel,
+        const std::string &message
+    );
+    void sendNames(Client &client, const Channel &channel);
+    std::string getClientPrefix(const Client &client) const;
 
 public:
     Server(int serverPort, const std::string &serverPassword);
@@ -64,7 +79,35 @@ public:
         int currentFd
     ) const;
 
+    bool isValidNickname(
+        const std::string &nickname
+    ) const;
+
+    std::string normalizeName(
+        const std::string &name
+    ) const;
+
     void handleUser(
+        Client &client,
+        const std::vector<std::string> &parameters
+    );
+    void handleJoin(
+        Client &client,
+        const std::vector<std::string> &parameters
+    );
+    void handlePart(
+        Client &client,
+        const std::vector<std::string> &parameters
+    );
+    void handleQuit(
+        Client &client,
+        const std::vector<std::string> &parameters
+    );
+    void handlePing(
+        Client &client,
+        const std::vector<std::string> &parameters
+    );
+    void handleCap(
         Client &client,
         const std::vector<std::string> &parameters
     );
@@ -76,7 +119,14 @@ public:
         const std::string &message
     );
 
+    void sendNumeric(
+        Client &client,
+        const std::string &code,
+        const std::string &parameters
+    );
+
     bool writeClient(std::size_t index);
+
 
 };
 

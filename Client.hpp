@@ -28,6 +28,8 @@ private:
     std::string username;
     std::string realname;
     bool        registered;
+    bool        quitRequested;
+    std::string quitReason;
 
 
 public:
@@ -55,6 +57,10 @@ public:
 
     bool isRegistered() const;
     void setRegistered(bool value);
+
+    void requestQuit(const std::string &reason);
+    bool isQuitRequested() const;
+    const std::string &getQuitReason() const;
 
     void queueMessage(const std::string &message);
     bool hasPendingOutput() const;
