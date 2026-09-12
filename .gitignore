@@ -36,3 +36,6 @@ ircserv
 
 # Project subject (local reference only)
 en.subject.pdf
+
+# Project dev history and tracking
+.dev-history/

@@ -43,19 +43,22 @@ const std::string &Client::getInputBuffer() const
 
 bool Client::hasCompleteMessage() const
 {
-    return inputBuffer.find("\r\n") != std::string::npos;
+    return inputBuffer.find('\n') != std::string::npos;
 }
 
 std::string Client::extractMessage()
 {
-    std::size_t end = inputBuffer.find("\r\n");
+    std::size_t end = inputBuffer.find('\n');
 
     if (end == std::string::npos)
         return "";
 
     std::string message = inputBuffer.substr(0, end);
 
-    inputBuffer.erase(0, end + 2);
+    inputBuffer.erase(0, end + 1);
+
+    if (!message.empty() && message[message.size() - 1] == '\r')
+        message.erase(message.size() - 1);
 
     return message;
 }

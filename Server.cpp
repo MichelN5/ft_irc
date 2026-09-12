@@ -54,6 +54,14 @@ static bool isValidChannelName(const std::string &name)
     return true;
 }
 
+bool Server::running = true;
+
+void Server::handleSignal(int signum)
+{
+    (void)signum;
+    Server::running = false;
+}
+
 Server::Server(
     int serverPort,
     const std::string &serverPassword
@@ -82,12 +90,14 @@ int Server::run()
     if (!setupSocket())
         return 1;
 
-    while (true)
+    while (Server::running)
     {
         int pollResult = poll(&pollFds[0], pollFds.size(), -1);
 
         if (pollResult == -1)
         {
+            if (!Server::running)
+                break;
             std::cerr << "poll failed: "
                     << strerror(errno) << std::endl;
             return 1;
@@ -139,24 +149,10 @@ int Server::run()
 
 bool Server::setNonBlocking(int fd)
 {
-    int flags = fcntl(fd, F_GETFL, 0);
-
-    if (flags == -1)
-    {
-        std::cerr << "fcntl F_GETFL failed: "
-                << strerror(errno) << std::endl;
+    if (fcntl(fd, F_SETFL, O_NONBLOCK) == -1)
         return false;
-    }
-
-    if (fcntl(fd, F_SETFL, flags | O_NONBLOCK) == -1)
-    {
-        std::cerr << "fcntl F_SETFL failed: "
-                << strerror(errno) << std::endl;
-        return false;
-    }
 
     return true;
-
 }
 
 
@@ -165,14 +161,7 @@ void Server::acceptClient()
     int clientFd = accept(serverFd, NULL, NULL);
 
     if (clientFd == -1)
-    {
-        if (errno != EAGAIN && errno != EWOULDBLOCK)
-        {
-            std::cerr << "accept failed: "
-                      << strerror(errno) << std::endl;
-        }
         return;
-    }
 
     if (!setNonBlocking(clientFd))
     {
@@ -331,19 +320,9 @@ bool Server::readClient(std::size_t index)
         return true;
     }
 
-    if (bytesReceived == 0)
+    if (bytesReceived <= 0)
     {
         disconnectClient(index, "Connection closed");
-        return false;
-    }
-
-    if (errno != EAGAIN && errno != EWOULDBLOCK)
-    {
-        std::cerr << "recv failed: "
-                  << strerror(errno)
-                  << std::endl;
-
-        disconnectClient(index, "Connection error");
         return false;
     }
 
@@ -499,6 +478,26 @@ void Server::processMessage(
     else if (command == "CAP")
     {
         handleCap(clientIt->second, parameters);
+    }
+    else if (command == "PRIVMSG")
+    {
+        handlePrivmsg(clientIt->second, parameters);
+    }
+    else if (command == "KICK")
+    {
+        handleKick(clientIt->second, parameters);
+    }
+    else if (command == "INVITE")
+    {
+        handleInvite(clientIt->second, parameters);
+    }
+    else if (command == "TOPIC")
+    {
+        handleTopic(clientIt->second, parameters);
+    }
+    else if (command == "MODE")
+    {
+        handleMode(clientIt->second, parameters);
     }
     else
     {
@@ -782,6 +781,536 @@ void Server::handleCap(
     }
 }
 
+void Server::handlePrivmsg(
+    Client &client,
+    const std::vector<std::string> &parameters
+)
+{
+    if (!client.isRegistered())
+    {
+        sendNumeric(client, "451", ":You have not registered");
+        return;
+    }
+
+    if (parameters.empty() || parameters[0].empty())
+    {
+        sendNumeric(client, "411", ":No recipient given (PRIVMSG)");
+        return;
+    }
+
+    if (parameters.size() < 2 || parameters[1].empty())
+    {
+        sendNumeric(client, "412", ":No text to send");
+        return;
+    }
+
+    std::vector<std::string> targets = splitCommaSeparated(parameters[0]);
+    const std::string &messageText = parameters[1];
+
+    for (std::size_t i = 0; i < targets.size(); i++)
+    {
+        const std::string &target = targets[i];
+        if (target.empty())
+            continue;
+
+        if (target[0] == '#' || target[0] == '&')
+        {
+            std::string normalizedChan = normalizeName(target);
+            std::map<std::string, Channel>::iterator chanIt = channels.find(normalizedChan);
+
+            if (chanIt == channels.end())
+            {
+                sendNumeric(client, "403", target + " :No such channel");
+                continue;
+            }
+
+            Channel &channel = chanIt->second;
+
+            if (!channel.hasMember(client.getFd()))
+            {
+                sendNumeric(client, "404", channel.getName() + " :Cannot send to channel");
+                continue;
+            }
+
+            std::string fullMsg = getClientPrefix(client) + " PRIVMSG " + channel.getName() + " :" + messageText;
+            const std::set<int> &members = channel.getMembers();
+
+            for (std::set<int>::const_iterator mit = members.begin(); mit != members.end(); ++mit)
+            {
+                if (*mit != client.getFd())
+                {
+                    std::map<int, Client>::iterator cit = clients.find(*mit);
+                    if (cit != clients.end())
+                        queueReply(cit->second, fullMsg);
+                }
+            }
+        }
+        else
+        {
+            std::string normalizedTarget = normalizeName(target);
+            Client *recipient = NULL;
+
+            for (std::map<int, Client>::iterator cit = clients.begin(); cit != clients.end(); ++cit)
+            {
+                if (cit->second.isRegistered() && normalizeName(cit->second.getNickname()) == normalizedTarget)
+                {
+                    recipient = &(cit->second);
+                    break;
+                }
+            }
+
+            if (!recipient)
+            {
+                sendNumeric(client, "401", target + " :No such nick/channel");
+                continue;
+            }
+
+            std::string fullMsg = getClientPrefix(client) + " PRIVMSG " + recipient->getNickname() + " :" + messageText;
+            queueReply(*recipient, fullMsg);
+        }
+    }
+}
+
+void Server::handleKick(
+    Client &client,
+    const std::vector<std::string> &parameters
+)
+{
+    if (!client.isRegistered())
+    {
+        sendNumeric(client, "451", ":You have not registered");
+        return;
+    }
+
+    if (parameters.size() < 2 || parameters[0].empty() || parameters[1].empty())
+    {
+        sendNumeric(client, "461", "KICK :Not enough parameters");
+        return;
+    }
+
+    const std::string &channelName = parameters[0];
+    const std::string &targetNick = parameters[1];
+    std::string reason = client.getNickname();
+    if (parameters.size() > 2 && !parameters[2].empty())
+        reason = parameters[2];
+
+    std::string normChan = normalizeName(channelName);
+    std::map<std::string, Channel>::iterator chanIt = channels.find(normChan);
+
+    if (chanIt == channels.end())
+    {
+        sendNumeric(client, "403", channelName + " :No such channel");
+        return;
+    }
+
+    Channel &channel = chanIt->second;
+
+    if (!channel.hasMember(client.getFd()))
+    {
+        sendNumeric(client, "442", channel.getName() + " :You're not on that channel");
+        return;
+    }
+
+    if (!channel.isOperator(client.getFd()))
+    {
+        sendNumeric(client, "482", channel.getName() + " :You're not channel operator");
+        return;
+    }
+
+    std::string normTarget = normalizeName(targetNick);
+    Client *targetClient = NULL;
+
+    for (std::map<int, Client>::iterator cit = clients.begin(); cit != clients.end(); ++cit)
+    {
+        if (cit->second.isRegistered() && normalizeName(cit->second.getNickname()) == normTarget)
+        {
+            targetClient = &(cit->second);
+            break;
+        }
+    }
+
+    if (!targetClient || !channel.hasMember(targetClient->getFd()))
+    {
+        sendNumeric(client, "441", targetNick + " " + channel.getName() + " :They aren't on that channel");
+        return;
+    }
+
+    std::string kickMsg = getClientPrefix(client) + " KICK " + channel.getName() + " " + targetClient->getNickname() + " :" + reason;
+    broadcastToChannel(channel, kickMsg);
+
+    channel.removeMember(targetClient->getFd());
+
+    if (channel.isEmpty())
+    {
+        channels.erase(chanIt);
+    }
+    else if (!channel.hasOperators())
+    {
+        channel.addOperator(*channel.getMembers().begin());
+    }
+}
+
+void Server::handleInvite(
+    Client &client,
+    const std::vector<std::string> &parameters
+)
+{
+    if (!client.isRegistered())
+    {
+        sendNumeric(client, "451", ":You have not registered");
+        return;
+    }
+
+    if (parameters.size() < 2 || parameters[0].empty() || parameters[1].empty())
+    {
+        sendNumeric(client, "461", "INVITE :Not enough parameters");
+        return;
+    }
+
+    const std::string &targetNick = parameters[0];
+    const std::string &channelName = parameters[1];
+
+    std::string normChan = normalizeName(channelName);
+    std::map<std::string, Channel>::iterator chanIt = channels.find(normChan);
+
+    if (chanIt == channels.end())
+    {
+        sendNumeric(client, "403", channelName + " :No such channel");
+        return;
+    }
+
+    Channel &channel = chanIt->second;
+
+    if (!channel.hasMember(client.getFd()))
+    {
+        sendNumeric(client, "442", channel.getName() + " :You're not on that channel");
+        return;
+    }
+
+    if (channel.isInviteOnly() && !channel.isOperator(client.getFd()))
+    {
+        sendNumeric(client, "482", channel.getName() + " :You're not channel operator");
+        return;
+    }
+
+    std::string normTarget = normalizeName(targetNick);
+    Client *targetClient = NULL;
+
+    for (std::map<int, Client>::iterator cit = clients.begin(); cit != clients.end(); ++cit)
+    {
+        if (cit->second.isRegistered() && normalizeName(cit->second.getNickname()) == normTarget)
+        {
+            targetClient = &(cit->second);
+            break;
+        }
+    }
+
+    if (!targetClient)
+    {
+        sendNumeric(client, "401", targetNick + " :No such nick/channel");
+        return;
+    }
+
+    if (channel.hasMember(targetClient->getFd()))
+    {
+        sendNumeric(client, "443", targetClient->getNickname() + " " + channel.getName() + " :is already on channel");
+        return;
+    }
+
+    channel.invite(targetClient->getFd());
+
+    sendNumeric(client, "341", targetClient->getNickname() + " " + channel.getName());
+
+    std::string inviteNotice = getClientPrefix(client) + " INVITE " + targetClient->getNickname() + " :" + channel.getName();
+    queueReply(*targetClient, inviteNotice);
+}
+
+void Server::handleTopic(
+    Client &client,
+    const std::vector<std::string> &parameters
+)
+{
+    if (!client.isRegistered())
+    {
+        sendNumeric(client, "451", ":You have not registered");
+        return;
+    }
+
+    if (parameters.empty() || parameters[0].empty())
+    {
+        sendNumeric(client, "461", "TOPIC :Not enough parameters");
+        return;
+    }
+
+    const std::string &channelName = parameters[0];
+    std::string normChan = normalizeName(channelName);
+    std::map<std::string, Channel>::iterator chanIt = channels.find(normChan);
+
+    if (chanIt == channels.end())
+    {
+        sendNumeric(client, "403", channelName + " :No such channel");
+        return;
+    }
+
+    Channel &channel = chanIt->second;
+
+    if (!channel.hasMember(client.getFd()))
+    {
+        sendNumeric(client, "442", channel.getName() + " :You're not on that channel");
+        return;
+    }
+
+    if (parameters.size() == 1)
+    {
+        if (channel.getTopic().empty())
+            sendNumeric(client, "331", channel.getName() + " :No topic is set");
+        else
+            sendNumeric(client, "332", channel.getName() + " :" + channel.getTopic());
+        return;
+    }
+
+    if (channel.isTopicRestricted() && !channel.isOperator(client.getFd()))
+    {
+        sendNumeric(client, "482", channel.getName() + " :You're not channel operator");
+        return;
+    }
+
+    channel.setTopic(parameters[1]);
+    std::string topicMsg = getClientPrefix(client) + " TOPIC " + channel.getName() + " :" + parameters[1];
+    broadcastToChannel(channel, topicMsg);
+}
+
+void Server::handleMode(
+    Client &client,
+    const std::vector<std::string> &parameters
+)
+{
+    if (!client.isRegistered())
+    {
+        sendNumeric(client, "451", ":You have not registered");
+        return;
+    }
+
+    if (parameters.empty() || parameters[0].empty())
+    {
+        sendNumeric(client, "461", "MODE :Not enough parameters");
+        return;
+    }
+
+    const std::string &target = parameters[0];
+
+    if (target[0] != '#' && target[0] != '&')
+    {
+        if (normalizeName(target) == normalizeName(client.getNickname()))
+            sendNumeric(client, "221", "+");
+        else
+            sendNumeric(client, "502", ":Cant change mode for other users");
+        return;
+    }
+
+    std::string normChan = normalizeName(target);
+    std::map<std::string, Channel>::iterator chanIt = channels.find(normChan);
+
+    if (chanIt == channels.end())
+    {
+        sendNumeric(client, "403", target + " :No such channel");
+        return;
+    }
+
+    Channel &channel = chanIt->second;
+
+    if (parameters.size() == 1)
+    {
+        std::string modeStr = "+";
+        std::string modeParams = "";
+
+        if (channel.isInviteOnly())
+            modeStr += "i";
+        if (channel.isTopicRestricted())
+            modeStr += "t";
+        if (channel.hasKey())
+        {
+            modeStr += "k";
+            modeParams += " " + channel.getKey();
+        }
+        if (channel.hasUserLimit())
+        {
+            modeStr += "l";
+            std::ostringstream oss;
+            oss << channel.getUserLimit();
+            modeParams += " " + oss.str();
+        }
+
+        sendNumeric(client, "324", channel.getName() + " " + modeStr + modeParams);
+        return;
+    }
+
+    if (!channel.hasMember(client.getFd()))
+    {
+        sendNumeric(client, "442", channel.getName() + " :You're not on that channel");
+        return;
+    }
+
+    if (!channel.isOperator(client.getFd()))
+    {
+        sendNumeric(client, "482", channel.getName() + " :You're not channel operator");
+        return;
+    }
+
+    const std::string &modes = parameters[1];
+    std::size_t paramIdx = 2;
+    char currentSign = '+';
+
+    std::string appliedModes = "";
+    std::string appliedParams = "";
+    char lastAppliedSign = '\0';
+
+    for (std::size_t i = 0; i < modes.size(); i++)
+    {
+        char c = modes[i];
+
+        if (c == '+' || c == '-')
+        {
+            currentSign = c;
+            continue;
+        }
+
+        if (c == 'i')
+        {
+            channel.setInviteOnly(currentSign == '+');
+            if (lastAppliedSign != currentSign)
+            {
+                appliedModes += currentSign;
+                lastAppliedSign = currentSign;
+            }
+            appliedModes += 'i';
+        }
+        else if (c == 't')
+        {
+            channel.setTopicRestricted(currentSign == '+');
+            if (lastAppliedSign != currentSign)
+            {
+                appliedModes += currentSign;
+                lastAppliedSign = currentSign;
+            }
+            appliedModes += 't';
+        }
+        else if (c == 'k')
+        {
+            if (currentSign == '+')
+            {
+                if (paramIdx < parameters.size() && !parameters[paramIdx].empty())
+                {
+                    const std::string &key = parameters[paramIdx++];
+                    channel.setKey(key);
+                    if (lastAppliedSign != currentSign)
+                    {
+                        appliedModes += currentSign;
+                        lastAppliedSign = currentSign;
+                    }
+                    appliedModes += 'k';
+                    appliedParams += " " + key;
+                }
+            }
+            else
+            {
+                if (paramIdx < parameters.size())
+                    paramIdx++;
+                channel.setKey("");
+                if (lastAppliedSign != currentSign)
+                {
+                    appliedModes += currentSign;
+                    lastAppliedSign = currentSign;
+                }
+                appliedModes += 'k';
+            }
+        }
+        else if (c == 'o')
+        {
+            if (paramIdx < parameters.size() && !parameters[paramIdx].empty())
+            {
+                const std::string &targetNick = parameters[paramIdx++];
+                std::string normTarget = normalizeName(targetNick);
+                Client *targetClient = NULL;
+
+                for (std::map<int, Client>::iterator cit = clients.begin(); cit != clients.end(); ++cit)
+                {
+                    if (cit->second.isRegistered() && normalizeName(cit->second.getNickname()) == normTarget)
+                    {
+                        targetClient = &(cit->second);
+                        break;
+                    }
+                }
+
+                if (!targetClient || !channel.hasMember(targetClient->getFd()))
+                {
+                    sendNumeric(client, "441", targetNick + " " + channel.getName() + " :They aren't on that channel");
+                }
+                else
+                {
+                    if (currentSign == '+')
+                        channel.addOperator(targetClient->getFd());
+                    else
+                        channel.removeOperator(targetClient->getFd());
+
+                    if (lastAppliedSign != currentSign)
+                    {
+                        appliedModes += currentSign;
+                        lastAppliedSign = currentSign;
+                    }
+                    appliedModes += 'o';
+                    appliedParams += " " + targetClient->getNickname();
+                }
+            }
+        }
+        else if (c == 'l')
+        {
+            if (currentSign == '+')
+            {
+                if (paramIdx < parameters.size() && !parameters[paramIdx].empty())
+                {
+                    const std::string &limitStr = parameters[paramIdx++];
+                    int limit = std::atoi(limitStr.c_str());
+                    if (limit > 0)
+                    {
+                        channel.setUserLimit(static_cast<std::size_t>(limit));
+                        if (lastAppliedSign != currentSign)
+                        {
+                            appliedModes += currentSign;
+                            lastAppliedSign = currentSign;
+                        }
+                        appliedModes += 'l';
+                        std::ostringstream oss;
+                        oss << limit;
+                        appliedParams += " " + oss.str();
+                    }
+                }
+            }
+            else
+            {
+                channel.setUserLimit(0);
+                if (lastAppliedSign != currentSign)
+                {
+                    appliedModes += currentSign;
+                    lastAppliedSign = currentSign;
+                }
+                appliedModes += 'l';
+            }
+        }
+        else
+        {
+            std::string unknown(1, c);
+            sendNumeric(client, "472", unknown + " :is unknown mode char to me for " + channel.getName());
+        }
+    }
+
+    if (!appliedModes.empty())
+    {
+        std::string modeNotice = getClientPrefix(client) + " MODE " + channel.getName() + " " + appliedModes + appliedParams;
+        broadcastToChannel(channel, modeNotice);
+    }
+}
+
 std::string Server::getClientPrefix(const Client &client) const
 {
     return ":" + client.getNickname() +
@@ -916,16 +1445,6 @@ void Server::handleNick(
     const std::vector<std::string> &parameters
 )
 {
-    if (!client.isPasswordAccepted())
-    {
-        sendNumeric(
-            client,
-            "451",
-            ":You have not registered"
-        );
-        return;
-    }
-
     if (parameters.empty() ||
         parameters[0].empty())
     {
@@ -974,11 +1493,29 @@ void Server::handleNick(
         !oldNickname.empty() &&
         oldNickname != newNickname)
     {
-        queueReply(
-            client,
-            ":" + oldNickname +
-            " NICK :" + newNickname
-        );
+        std::string nickMsg = ":" + oldNickname + "!" + client.getUsername() + "@localhost NICK :" + newNickname;
+        queueReply(client, nickMsg);
+
+        std::set<int> notifiedFds;
+        for (std::map<std::string, Channel>::iterator it = channels.begin(); it != channels.end(); ++it)
+        {
+            if (it->second.hasMember(client.getFd()))
+            {
+                const std::set<int> &members = it->second.getMembers();
+                for (std::set<int>::const_iterator mit = members.begin(); mit != members.end(); ++mit)
+                {
+                    if (*mit != client.getFd() && notifiedFds.find(*mit) == notifiedFds.end())
+                    {
+                        std::map<int, Client>::iterator cit = clients.find(*mit);
+                        if (cit != clients.end())
+                        {
+                            queueReply(cit->second, nickMsg);
+                            notifiedFds.insert(*mit);
+                        }
+                    }
+                }
+            }
+        }
     }
 
     std::cout << "Nickname set for client "
@@ -995,16 +1532,6 @@ void Server::handleUser(
     const std::vector<std::string> &parameters
 )
 {
-    if (!client.isPasswordAccepted())
-    {
-        sendNumeric(
-            client,
-            "451",
-            ":You have not registered"
-        );
-        return;
-    }
-
     if (client.isRegistered())
     {
         sendNumeric(
@@ -1051,6 +1578,21 @@ void Server::tryRegister(Client &client)
         "001",
         ":Welcome to the Internet Relay Network " +
         client.getNickname()
+    );
+    sendNumeric(
+        client,
+        "002",
+        ":Your host is ircserv, running version 1.0"
+    );
+    sendNumeric(
+        client,
+        "003",
+        ":This server was created today"
+    );
+    sendNumeric(
+        client,
+        "004",
+        "ircserv 1.0  itkol"
     );
 }
 
@@ -1135,19 +1677,13 @@ bool Server::writeClient(std::size_t index)
         return true;
     }
 
-    if (bytesSent == -1 &&
-        (errno == EAGAIN || errno == EWOULDBLOCK))
+    if (bytesSent <= 0)
     {
-        return true;
+        disconnectClient(index, "Connection error");
+        return false;
     }
 
-    std::cerr << "send failed for client "
-              << clientFd << ": "
-              << strerror(errno)
-              << std::endl;
-
-    disconnectClient(index, "Connection error");
-    return false;
+    return true;
 }
 
 
