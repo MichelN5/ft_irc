@@ -99,25 +99,7 @@ The server operates on a single-threaded, event-driven, non-blocking I/O model:
 
 ---
 
-## 5. Command Reference
-
-| Command | Syntax |
-| :--- | :--- |
-| `PASS` | `PASS <password>` |
-| `NICK` | `NICK <nickname>` |
-| `USER` | `USER <username> <hostname> <server> :<realname>` |
-| `JOIN` | `JOIN <channel>[,<chans>] [<key>[,<keys>]]` |
-| `PART` | `PART <channel> [:<reason>]` |
-| `PRIVMSG` | `PRIVMSG <target> :<message>` |
-| `QUIT` | `QUIT [:<reason>]` |
-| `KICK` | `KICK <channel> <nick> [:<comment>]` |
-| `INVITE` | `INVITE <nick> <channel>` |
-| `TOPIC` | `TOPIC <channel> [:<newtopic>]` |
-| `MODE` | `MODE <channel> [flags] [args]` / `MODE <nickname>` |
-
----
-
-## 6. Full Testing Guide
+## 5. Full Testing Guide
 
 This section is structured to mirror the sections of the 42 Evaluation Sheet in exact sequence. Every test can be conducted manually using standard terminal tools (`nc` and `irssi`).
 
