@@ -29,9 +29,9 @@ The designated reference client used to validate this server is **Irssi**, chose
 
 ### Out of Scope
 In accordance with the 42 project subject:
-- **Bonus Features**: DCC file transfer and IRC bot are optional bonuses and are intentionally excluded to focus engineering rigor on the stability and gate compliance of the mandatory IRC server specification.
-- **Server Linking**: Server-to-server (`SERVER`, `SQUIT`) routing and multi-server IRC mesh federation are strictly outside the 42 subject requirements; `ircserv` operates as an autonomous, standalone server.
-- **Client Software**: This repository builds `ircserv` exclusively; interactive chatting requires an external client such as Irssi or Netcat.
+- **Bonus Features**: DCC file transfer and IRC bot are not part of the mandatory specification and are not included.
+- **Server Linking**: Server-to-server (`SERVER`, `SQUIT`) routing and IRC network clustering are excluded.
+- **Client Software**: This repository builds `ircserv` exclusively.
 
 ---
 
@@ -92,14 +92,39 @@ USER alice 0 * :Alice Wonderland
 
 ## 4. Architecture Summary
 
-The server operates on a single-threaded, event-driven, non-blocking I/O model:
-- **Event Multiplexing**: All listening and client socket descriptors are monitored inside a single `poll()` loop in `Server::run()`. Syscalls (`accept`, `recv`, `send`) only execute after `poll()` confirms readiness (`POLLIN` / `POLLOUT`).
-- **Non-Blocking Sockets**: Sockets are set non-blocking immediately upon creation using `fcntl(fd, F_SETFL, O_NONBLOCK)`. Control flow never blocks and is never gated on `errno`.
-- **Single Process**: Operates strictly without `fork()`, worker threads, or background processes.
+The server is built around a single-threaded, event-driven, non-blocking architecture designed to satisfy all 42 School non-blocking constraints:
+- **Single Multiplexing Call Site**: Exactly one `poll()` call site exists in the entire codebase, located inside `Server::run()` in [Server.cpp](Server.cpp#L88-L146). All active sockets—the listening server socket (`serverFd`) and all client sockets—are registered within a single `std::vector<struct pollfd> pollFds` container and evaluated on each iteration.
+- **Poll-First Precondition**: Syscalls (`accept`, `recv`, `send`) are never executed unconditionally. A socket is read from only when `poll()` sets `POLLIN`, and written to only when `poll()` sets `POLLOUT`.
+- **Strict `fcntl` Configuration**: Sockets are set to non-blocking mode exclusively using the bare form `fcntl(fd, F_SETFL, O_NONBLOCK)` without `F_GETFL` or compound flags (see `Server::setNonBlocking()` in [Server.cpp](Server.cpp#L150-L156)).
+- **Zero `errno` Control Gating**: The server never gates post-syscall control flow on `errno` (e.g., no `if (errno == EAGAIN)` retries or loops). Branching relies strictly on syscall return codes (`<= 0`) indicating connection closure or completion (see `Server::readClient()` and `Server::writeClient()` in [Server.cpp](Server.cpp)).
+- **No Subprocesses**: The server does not use `fork()` or multi-threading; all client operations execute in a unified non-blocking memory space.
 
 ---
 
-## 5. Full Testing Guide
+## 5. Command Reference
+
+| Command | Syntax | Description | Example |
+| :--- | :--- | :--- | :--- |
+| `PASS` | `PASS <password>` | Supplies the connection authentication password. | `PASS mysecretpassword` |
+| `NICK` | `NICK <nickname>` | Sets or alters the client's nickname. | `NICK alice` |
+| `USER` | `USER <username> <hostname> <server> :<realname>` | Sets username and real name; completes registration. | `USER alice 0 * :Alice Smith` |
+| `JOIN` | `JOIN <channel>[,<chans>] [<key>[,<keys>]]` | Enters or creates channel(s); first member becomes operator. | `JOIN #chat pass123` |
+| `PART` | `PART <channel> [:<reason>]` | Leaves the specified channel with an optional parting comment. | `PART #chat :Going to lunch` |
+| `PRIVMSG` | `PRIVMSG <target> :<message>` | Sends a private message to a user or broadcasts to a channel. | `PRIVMSG #chat :Hello team!` |
+| `QUIT` | `QUIT [:<reason>]` | Disconnects the client and broadcasts the reason to peers. | `QUIT :Client exiting` |
+| `KICK` | `KICK <channel> <nick> [:<comment>]` | Operator forcibly expels a user from a channel. | `KICK #chat bob :Rule violation` |
+| `INVITE` | `INVITE <nick> <channel>` | Invites a user to a channel (required when `+i` is active). | `INVITE charlie #chat` |
+| `TOPIC` | `TOPIC <channel> [:<newtopic>]` | Queries current topic or modifies it (operator-gated under `+t`). | `TOPIC #chat :Project Discussion` |
+| `MODE (query)` | `MODE <channel>` | Queries currently active channel modes and their parameters. | `MODE #chat` |
+| `MODE +i / -i` | `MODE <channel> +i` / `-i` | Sets or removes invite-only restriction. | `MODE #chat +i` |
+| `MODE +t / -t` | `MODE <channel> +t` / `-t` | Restricts topic alterations to channel operators (`+t`), or opens it (`-t`). | `MODE #chat +t` |
+| `MODE +k / -k` | `MODE <channel> +k <key>` / `-k` | Sets or clears channel password/key required to join. | `MODE #chat +k secret123` |
+| `MODE +o / -o` | `MODE <channel> +o <nick>` / `-o <nick>` | Grants or revokes channel operator status. | `MODE #chat +o bob` |
+| `MODE +l / -l` | `MODE <channel> +l <limit>` / `-l` | Sets or removes maximum simultaneous user limit. | `MODE #chat +l 25` |
+
+---
+
+## 6. Full Testing Guide
 
 This section is structured to mirror the sections of the 42 Evaluation Sheet in exact sequence. Every test can be conducted manually using standard terminal tools (`nc` and `irssi`).
 
@@ -151,12 +176,12 @@ Start the server in Terminal 1:
 ```
 - **Success**: The server starts, prints no runtime errors, and blocks cleanly in its event loop.
 - Verify binding to all interfaces:
-   ```bash
-   ss -tulpn | grep 6667
-   # or
-   netstat -tulpn | grep 6667
-   ```
-   **Success**: Shows `0.0.0.0:6667` in `LISTEN` state.
+  ```bash
+  ss -tulpn | grep 6667
+  # or
+  netstat -tulpn | grep 6667
+  ```
+  **Success**: Shows `0.0.0.0:6667` in `LISTEN` state.
 
 #### 2. Simultaneous Connections (`nc` and `irssi`)
 - **Terminal 2 (Irssi)**:
@@ -326,17 +351,9 @@ nc 127.0.0.1 6667
 
 ### Part E: Channel Operator Commands & Modes
 
-#### Client Setup Pattern
-For each client terminal (`nc 127.0.0.1 6667`), authenticate using:
-```text
-PASS mypassword
-NICK <nickname>
-USER <username> 0 * :<realname>
-```
-
-Initialize the test environment with two sessions:
-- **Client 1 (Operator `op_user`)**: Connect as `op_user`, then send `JOIN #ops` (first member; automatically granted channel operator `@`).
-- **Client 2 (Regular Member `reg_user`)**: Connect as `reg_user`, then send `JOIN #ops` (regular non-operator member).
+Set up the operator test environment with two clients:
+- **Client 1 (Operator)**: Netcat or Irssi connected as `op_user`. Joins `#ops` first (auto-granted `@` operator).
+- **Client 2 (Regular Member)**: Netcat or Irssi connected as `reg_user`. Joins `#ops` second (regular member).
 
 #### 1. Non-Operator Privilege Rejection (`482`)
 From **Client 2 (`reg_user`)**, attempt operator actions:
@@ -390,7 +407,13 @@ From **Client 1 (`op_user`)**:
 ```text
 MODE #ops +k secretkey
 ```
-In Terminal 3, connect `user3` using the connection pattern above.
+In a third terminal, connect `user3`:
+```bash
+nc 127.0.0.1 6667
+PASS mypassword
+NICK user3
+USER u3 0 * :User 3
+```
 - Try to join without key:
   ```text
   JOIN #ops
@@ -518,3 +541,11 @@ To verify zero memory leaks across active sessions:
    definitely lost: 0 bytes in 0 blocks
    indirectly lost: 0 bytes in 0 blocks
    ```
+
+---
+
+## 7. Known Limitations / Notes
+
+1. **Standalone Architecture**: As required by the 42 subject, `ircserv` operates strictly as an autonomous, single-server system. It does not link with other IRC daemons or form IRC networks.
+2. **Server-Side Focus**: This project implements the server engine. Interactive end-user chatting requires an IRC client such as Irssi or raw terminal tools like Netcat.
+3. **Bonus Boundaries**: Features categorized as optional bonuses in the subject (DCC file transfer and automated IRC bots) are intentionally omitted from this submission to focus 100% of engineering rigor on the stability, performance, and gate compliance of the mandatory IRC server specification.
