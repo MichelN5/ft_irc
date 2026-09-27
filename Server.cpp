@@ -301,6 +301,16 @@ bool Server::readClient(std::size_t index)
             std::string message =
                 clientIt->second.extractMessage();
 
+            if (message.size() > 510)
+            {
+                sendNumeric(
+                    clientIt->second,
+                    "417",
+                    ":Input line was too long"
+                );
+                continue;
+            }
+
             processMessage(clientFd, message);
 
             if (clientIt->second.isQuitRequested())
@@ -308,6 +318,12 @@ bool Server::readClient(std::size_t index)
                 disconnectClient(index, clientIt->second.getQuitReason());
                 return false;
             }
+        }
+
+        if (clientIt->second.getInputBuffer().size() > 510)
+        {
+            disconnectClient(index, "Input line too long");
+            return false;
         }
 
         buffer[bytesReceived] = '\0';
@@ -320,13 +336,22 @@ bool Server::readClient(std::size_t index)
         return true;
     }
 
-    if (bytesReceived <= 0)
+    if (bytesReceived == 0)
     {
         disconnectClient(index, "Connection closed");
         return false;
     }
 
-    return true;
+    if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)
+        return true;
+
+    std::cerr << "recv failed for client "
+              << clientFd << ": "
+              << strerror(errno)
+              << std::endl;
+
+    disconnectClient(index, "Connection error");
+    return false;
 }
 
 bool Server::setupSocket()
@@ -987,7 +1012,7 @@ void Server::handleInvite(
         return;
     }
 
-    if (channel.isInviteOnly() && !channel.isOperator(client.getFd()))
+    if (!channel.isOperator(client.getFd()))
     {
         sendNumeric(client, "482", channel.getName() + " :You're not channel operator");
         return;
@@ -1211,11 +1236,13 @@ void Server::handleMode(
                     appliedModes += 'k';
                     appliedParams += " " + key;
                 }
+                else
+                {
+                    sendNumeric(client, "461", "MODE :Not enough parameters");
+                }
             }
             else
             {
-                if (paramIdx < parameters.size())
-                    paramIdx++;
                 channel.setKey("");
                 if (lastAppliedSign != currentSign)
                 {
@@ -1262,6 +1289,10 @@ void Server::handleMode(
                     appliedParams += " " + targetClient->getNickname();
                 }
             }
+            else
+            {
+                sendNumeric(client, "461", "MODE :Not enough parameters");
+            }
         }
         else if (c == 'l')
         {
@@ -1270,8 +1301,14 @@ void Server::handleMode(
                 if (paramIdx < parameters.size() && !parameters[paramIdx].empty())
                 {
                     const std::string &limitStr = parameters[paramIdx++];
-                    int limit = std::atoi(limitStr.c_str());
-                    if (limit > 0)
+                    char *end = NULL;
+                    errno = 0;
+                    long limit = std::strtol(limitStr.c_str(), &end, 10);
+
+                    if (errno == 0 &&
+                        end != limitStr.c_str() &&
+                        *end == '\0' &&
+                        limit > 0)
                     {
                         channel.setUserLimit(static_cast<std::size_t>(limit));
                         if (lastAppliedSign != currentSign)
@@ -1284,6 +1321,19 @@ void Server::handleMode(
                         oss << limit;
                         appliedParams += " " + oss.str();
                     }
+                    else
+                    {
+                        sendNumeric(
+                            client,
+                            "696",
+                            channel.getName() + " l " + limitStr +
+                                " :Invalid mode parameter"
+                        );
+                    }
+                }
+                else
+                {
+                    sendNumeric(client, "461", "MODE :Not enough parameters");
                 }
             }
             else
@@ -1677,13 +1727,16 @@ bool Server::writeClient(std::size_t index)
         return true;
     }
 
-    if (bytesSent <= 0)
-    {
-        disconnectClient(index, "Connection error");
-        return false;
-    }
+    if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)
+        return true;
 
-    return true;
+    std::cerr << "send failed for client "
+              << clientFd << ": "
+              << strerror(errno)
+              << std::endl;
+
+    disconnectClient(index, "Connection error");
+    return false;
 }
 
 

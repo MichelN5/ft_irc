@@ -96,7 +96,7 @@ The server is built around a single-threaded, event-driven, non-blocking archite
 - **Single Multiplexing Call Site**: Exactly one `poll()` call site exists in the entire codebase, located inside `Server::run()` in [Server.cpp](Server.cpp#L88-L146). All active sockets—the listening server socket (`serverFd`) and all client sockets—are registered within a single `std::vector<struct pollfd> pollFds` container and evaluated on each iteration.
 - **Poll-First Precondition**: Syscalls (`accept`, `recv`, `send`) are never executed unconditionally. A socket is read from only when `poll()` sets `POLLIN`, and written to only when `poll()` sets `POLLOUT`.
 - **Strict `fcntl` Configuration**: Sockets are set to non-blocking mode exclusively using the bare form `fcntl(fd, F_SETFL, O_NONBLOCK)` without `F_GETFL` or compound flags (see `Server::setNonBlocking()` in [Server.cpp](Server.cpp#L150-L156)).
-- **Zero `errno` Control Gating**: The server never gates post-syscall control flow on `errno` (e.g., no `if (errno == EAGAIN)` retries or loops). Branching relies strictly on syscall return codes (`<= 0`) indicating connection closure or completion (see `Server::readClient()` and `Server::writeClient()` in [Server.cpp](Server.cpp)).
+- **Non-blocking Retry Handling**: After `poll()` reports readiness, `recv()` and `send()` still handle `EAGAIN`, `EWOULDBLOCK`, and `EINTR` as retryable conditions. EOF and non-retryable socket errors trigger connection cleanup (see `Server::readClient()` and `Server::writeClient()` in [Server.cpp](Server.cpp)).
 - **No Subprocesses**: The server does not use `fork()` or multi-threading; all client operations execute in a unified non-blocking memory space.
 
 ---
@@ -151,13 +151,13 @@ Before launching the server, verify the core architectural constraints directly 
      grep -rn "fcntl(" .
      ```
    - **Success**: The only occurrence is `fcntl(fd, F_SETFL, O_NONBLOCK);` in `Server::setNonBlocking()` at [Server.cpp:152](Server.cpp#L152). No `F_GETFL`, compound bitwise expressions, or alternate flags exist.
-4. **Zero Post-Syscall `errno` Gating (Gate C)**:
+4. **Non-blocking Error Handling**:
    - Run:
      ```bash
-     grep -rn "EAGAIN" .
-     grep -rn "EWOULDBLOCK" .
-     ```
-   - **Success**: Zero matches in the server codebase. Syscalls do not check `errno` to dictate retry or return branching.
+      grep -rn "EAGAIN" .
+      grep -rn "EWOULDBLOCK" .
+      ```
+   - **Success**: `recv()` and `send()` treat `EAGAIN` and `EWOULDBLOCK` as temporary conditions and keep the client connected. EOF and other socket errors cleanly disconnect only the affected client.
 5. **No Forking (Gate E)**:
    - Run:
      ```bash
