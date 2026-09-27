@@ -341,10 +341,6 @@ bool Server::readClient(std::size_t index)
         disconnectClient(index, "Connection closed");
         return false;
     }
-
-    if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)
-        return true;
-
     std::cerr << "recv failed for client "
               << clientFd << ": "
               << strerror(errno)
@@ -1012,7 +1008,7 @@ void Server::handleInvite(
         return;
     }
 
-    if (!channel.isOperator(client.getFd()))
+    if (channel.isInviteOnly() && !channel.isOperator(client.getFd()))
     {
         sendNumeric(client, "482", channel.getName() + " :You're not channel operator");
         return;
@@ -1156,7 +1152,8 @@ void Server::handleMode(
         if (channel.hasKey())
         {
             modeStr += "k";
-            modeParams += " " + channel.getKey();
+            if (channel.hasMember(client.getFd()))
+                modeParams += " " + channel.getKey();
         }
         if (channel.hasUserLimit())
         {
@@ -1726,9 +1723,6 @@ bool Server::writeClient(std::size_t index)
 
         return true;
     }
-
-    if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)
-        return true;
 
     std::cerr << "send failed for client "
               << clientFd << ": "
