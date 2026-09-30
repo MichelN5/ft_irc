@@ -15,7 +15,7 @@ The designated reference client used to validate this server is **Irssi**, chose
 - **Channel Operations & Messaging**: `JOIN` (channel creation, automatic first-member operator grant, comma-separated channel lists, keys), `PART` (channel departure with reason), and `PRIVMSG` (private user-to-user and channel-wide broadcast, strictly excluding the sender).
 - **Channel Operator Privileges & Commands**:
   - `KICK`: Forceful member removal with optional comment.
-  - `INVITE`: Scoped per-channel-per-user invitations lifting invite-only restrictions for target users.
+  - `INVITE`: Channel members can invite on open channels; only operators can invite when `+i` is active.
   - `TOPIC`: Query current topic (`331`/`332`) and update topic (enforced by `+t`).
   - `MODE`: Complete channel mode manipulation with support for single, compound, and mixed signs, plus bare mode query (`324 RPL_CHANNELMODEIS`) and user mode query (`221 RPL_UMODEIS`).
 - **Channel Modes (All 5 Flags)**:
@@ -24,7 +24,7 @@ The designated reference client used to validate this server is **Irssi**, chose
   - `k`: Channel key/password requirement (`+k <key>` / `-k`).
   - `o`: Operator privilege delegation and revocation (`+o <nick>` / `-o <nick>`).
   - `l`: Maximum channel user capacity limit (`+l <count>` / `-l`).
-- **Privilege Separation**: Strict enforcement returning numeric `482 ERR_CHANOPRIVSNEEDED` whenever a non-operator attempts an operator-gated command or mode flag.
+- **Privilege Separation**: Operator-only actions return numeric `482 ERR_CHANOPRIVSNEEDED` for regular members, including `INVITE` when the channel is `+i`.
 - **Robustness**: Complete tolerance against TCP packet fragmentation, chunked commands, ungraceful socket closure mid-command, backlog queuing for suspended clients, and clean signal handling (`SIGINT`, `SIGTERM`, and ignored `SIGPIPE`).
 
 ### Out of Scope
@@ -96,7 +96,7 @@ The server is built around a single-threaded, event-driven, non-blocking archite
 - **Single Multiplexing Call Site**: Exactly one `poll()` call site exists in the entire codebase, located inside `Server::run()` in [Server.cpp](Server.cpp#L88-L146). All active sockets—the listening server socket (`serverFd`) and all client sockets—are registered within a single `std::vector<struct pollfd> pollFds` container and evaluated on each iteration.
 - **Poll-First Precondition**: Syscalls (`accept`, `recv`, `send`) are never executed unconditionally. A socket is read from only when `poll()` sets `POLLIN`, and written to only when `poll()` sets `POLLOUT`.
 - **Strict `fcntl` Configuration**: Sockets are set to non-blocking mode exclusively using the bare form `fcntl(fd, F_SETFL, O_NONBLOCK)` without `F_GETFL` or compound flags (see `Server::setNonBlocking()` in [Server.cpp](Server.cpp#L150-L156)).
-- **Non-blocking Retry Handling**: After `poll()` reports readiness, `recv()` and `send()` still handle `EAGAIN`, `EWOULDBLOCK`, and `EINTR` as retryable conditions. EOF and non-retryable socket errors trigger connection cleanup (see `Server::readClient()` and `Server::writeClient()` in [Server.cpp](Server.cpp)).
+- **Socket Error Handling**: After `poll()` reports readiness, `recv()` and `send()` handle their return values without branching on `errno`. EOF and failed socket operations clean up the affected client (see `Server::readClient()` and `Server::writeClient()` in [Server.cpp](Server.cpp)).
 - **No Subprocesses**: The server does not use `fork()` or multi-threading; all client operations execute in a unified non-blocking memory space.
 
 ---
@@ -151,13 +151,12 @@ Before launching the server, verify the core architectural constraints directly 
      grep -rn "fcntl(" .
      ```
    - **Success**: The only occurrence is `fcntl(fd, F_SETFL, O_NONBLOCK);` in `Server::setNonBlocking()` at [Server.cpp:152](Server.cpp#L152). No `F_GETFL`, compound bitwise expressions, or alternate flags exist.
-4. **Non-blocking Error Handling**:
+4. **No Post-I/O `errno` Branching**:
    - Run:
      ```bash
-      grep -rn "EAGAIN" .
-      grep -rn "EWOULDBLOCK" .
-      ```
-   - **Success**: `recv()` and `send()` treat `EAGAIN` and `EWOULDBLOCK` as temporary conditions and keep the client connected. EOF and other socket errors cleanly disconnect only the affected client.
+      rg -n "EAGAIN|EWOULDBLOCK|EINTR" --glob '*.cpp' --glob '*.hpp'
+     ```
+   - **Success**: No branches on these error codes appear after `accept()`, `recv()`, or `send()`. Those calls occur only after the matching readiness event from `poll()`.
 5. **No Forking (Gate E)**:
    - Run:
      ```bash

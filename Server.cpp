@@ -342,8 +342,7 @@ bool Server::readClient(std::size_t index)
         return false;
     }
     std::cerr << "recv failed for client "
-              << clientFd << ": "
-              << strerror(errno)
+              << clientFd
               << std::endl;
 
     disconnectClient(index, "Connection error");
@@ -1725,8 +1724,7 @@ bool Server::writeClient(std::size_t index)
     }
 
     std::cerr << "send failed for client "
-              << clientFd << ": "
-              << strerror(errno)
+              << clientFd
               << std::endl;
 
     disconnectClient(index, "Connection error");
